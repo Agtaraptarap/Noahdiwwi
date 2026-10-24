@@ -8,14 +8,15 @@ import json
 import time
 
 # ----------------- ENVIRONMENT VARIABLES -----------------
-BOT_TOKEN = os.getenv("8605535414:AAGQvmgH2Xgj0ahD_7zCIAmacn9MqkiUHBo")
-OWNER_ID_ENV = os.getenv("7609375248")
+# Ginagamitan ng fallback string para siguradong gagana kahit walang .env sa hosting
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8605535414:AAGQvmgH2Xgj0ahD_7zCIAmacn9MqkiUHBo")
+OWNER_ID_ENV = os.getenv("OWNER_ID", "7609375248")
 
 if not BOT_TOKEN:
-    sys.exit("[CRITICAL ERROR] 'BOT_TOKEN' environment variable is missing! Please configure it in Railway.")
+    sys.exit("[CRITICAL ERROR] 'BOT_TOKEN' environment variable is missing!")
 
 if not OWNER_ID_ENV:
-    sys.exit("[CRITICAL ERROR] 'OWNER_ID' environment variable is missing! Please configure it in Railway.")
+    sys.exit("[CRITICAL ERROR] 'OWNER_ID' environment variable is missing!")
 
 try:
     OWNER_ID = int(OWNER_ID_ENV)
@@ -38,15 +39,9 @@ START_TIME = time.time()
 # ----------------- ESCAPE / SANITIZATION HELPERS -----------------
 
 def escape_markdown(text):
-    """
-    Escapes Telegram legacy Markdown special characters (*, _, `, [).
-    Prevents 'can't parse entities' errors when usernames or names contain symbols.
-    """
-    if not text:
-        return ""
+    if not text: return ""
     chars = ['*', '_', '`', '[']
-    for ch in chars:
-        text = text.replace(ch, f"\\{ch}")
+    for ch in chars: text = text.replace(ch, f"\\{ch}")
     return text
 
 # ----------------- STORAGE HELPERS -----------------
@@ -100,10 +95,6 @@ def is_allowed_user(user_id):
     return user_id in allowed_users or user_id == OWNER_ID
 
 def check_channel_subscriptions(user_id):
-    """
-    Checks if a user is subscribed to ALL configured channels (up to 10).
-    Returns: (is_all_joined: bool, missing_channels: list of dicts)
-    """
     if is_owner(user_id):
         return True, []
 
@@ -400,7 +391,6 @@ def send_menu(message):
         bot.reply_to(message, text, parse_mode="Markdown", reply_markup=get_main_menu_keyboard(user_id))
         return
 
-    # Check All Channel Memberships
     is_all_joined, missing = check_channel_subscriptions(user_id)
     if not is_all_joined:
         bot.reply_to(
@@ -411,7 +401,6 @@ def send_menu(message):
         )
         return
 
-    # If all joined, check Whitelist Authorization
     if not is_allowed_user(user_id):
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("📩 Request Authorization from Admin", callback_data="send_auth_request"))
@@ -1032,5 +1021,6 @@ def handle_callbacks(call):
         )
         bot.answer_callback_query(call.id)
 
-print("⚡️ ASH X HOST is online and waiting...")
-bot.infinity_polling()
+if __name__ == "__main__":
+    print("⚡️ ASH X HOST is online and waiting...")
+    bot.infinity_polling()
