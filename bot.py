@@ -97,6 +97,7 @@ Welcome to the Cloud Panel. 🚀
 ▪️ Send your bot file directly to this chat (`.py`, `.js`, `.zip`).
 ▪️ The bot will extract, save, and **AUTO-START** it instantly.
 ▪️ Type `/hosts` to see your uploaded bots & their status.
+▪️ Type `/logs <filename>` to see why a bot crashed.
 
 ⚙️ *SYSTEM VITALS:*
 ▪️ `/status` - Live uptime & overview ⏳
@@ -146,9 +147,8 @@ def my_id(message):
 def sys_info(message):
     bot.reply_to(message, f"🧬 *CPU:* `{psutil.cpu_percent()}%` | *RAM:* `{psutil.virtual_memory().percent}%`", parse_mode="Markdown")
 
-# ----------------- AUTO-START BOT HOSTING ENGINE -----------------
-def run_file_auto(filepath, filename):
-    # Auto-detect runner
+# ----------------- BOT HOSTING ENGINE (AUTO-START & LOGS) -----------------
+def start_process(filepath, filename):
     cmd = ""
     if filename.endswith(".py"): cmd = f"python3 {filepath}"
     elif filename.endswith(".js"): cmd = f"node {filepath}"
@@ -156,11 +156,21 @@ def run_file_auto(filepath, filename):
     
     if cmd:
         try:
-            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            bg_processes[proc.pid] = {'process': proc, 'file': filename, 'cmd': cmd}
+            # I-redirect ang output sa log file para makita kung bakit nag-crash
+            log_file = os.path.join(HOSTED_BOTS_DIR, f"{filename}.log")
+            with open(log_file, "w") as f:
+                # Popen na tumatakbo sa background, naka-save ang output sa log
+                proc = subprocess.Popen(
+                    cmd, shell=True, 
+                    stdout=f, 
+                    stderr=subprocess.STDOUT,
+                    preexec_fn=os.setsid # Para kapag kinill, pati anak na process mamatay
+                )
+            bg_processes[proc.pid] = {'process': proc, 'file': filename, 'cmd': cmd, 'log': log_file}
             return True, proc.pid
-        except: return False, None
-    return False, None
+        except Exception as e:
+            return False, str(e)
+    return False, "Unsupported file type"
 
 @bot.message_handler(content_types=['document'])
 def handle_upload(message):
@@ -184,6 +194,8 @@ def handle_upload(message):
         size_kb = os.path.getsize(filepath) / 1024
         extract_msg = ""
         run_msg = ""
+        target_file = filepath
+        target_name = filename
         
         # Auto-extract ZIP files
         if filename.endswith(".zip"):
@@ -193,36 +205,73 @@ def handle_upload(message):
                     zip_ref.extractall(extract_folder)
                 extract_msg = f"\n📦 *Extracted:* `{filename.replace('.zip', '')}/`"
                 
-                # Hanapin yung main python/js file sa loob ng zip
+                # Hanapin yung unang .py or .js file sa loob ng zip
+                found_main = False
                 for root, dirs, files in os.walk(extract_folder):
                     for f in files:
                         if f.endswith('.py') or f.endswith('.js'):
-                            target_filepath = os.path.join(root, f)
-                            success, pid = run_file_auto(target_filepath, f)
-                            if success:
-                                run_msg = f"\n🟢 *Auto-Started:* `{f}` (PID: `{pid}`)"
+                            target_file = os.path.join(root, f)
+                            target_name = f
+                            found_main = True
                             break
-                    if run_msg: break
+                    if found_main: break
+                
+                # Kung may requirements.txt, i-install
+                req_file = os.path.join(extract_folder, "requirements.txt")
+                if os.path.exists(req_file):
+                    extract_msg += "\n⏳ *Installing requirements...*"
+                    os.system(f"pip install -r {req_file} > /dev/null 2>&1")
+                    extract_msg += " (Done)"
+                    
+                if found_main:
+                    success, res = start_process(target_file, target_name)
+                    if success: run_msg = f"\n🟢 *Auto-Started:* `{target_name}` (PID: `{res}`)"
+                    else: run_msg = f"\n⚠️ *Start Failed:* {res}"
+                else:
+                    run_msg = "\n⚠️ No .py or .js found inside zip."
+                    
             except Exception as e:
                 extract_msg = f"\n⚠️ Extract error: {e}"
         else:
-            # Auto-start .py or .js kapag direct upload
-            success, pid = run_file_auto(filepath, filename)
-            if success:
-                run_msg = f"\n🟢 *Auto-Started:* (PID: `{pid}`)"
-            else:
-                run_msg = "\n⚠️ File saved. Unsupported format for auto-run."
+            # Auto-start kapag direct upload
+            success, res = start_process(filepath, filename)
+            if success: run_msg = f"\n🟢 *Auto-Started:* (PID: `{res}`)"
+            else: run_msg = f"\n⚠️ *Start Failed:* {res}"
 
         text = (
             f"✅ *[BOT UPLOADED SUCCESSFULLY]*\n\n"
             f"📄 *Filename:* `{filename}`\n"
-            f"📦 *Size:* `{size_kb:.1f} KB`\n"
-            f"📁 *Path:* `uploaded_bots/{filename}`{extract_msg}{run_msg}\n\n"
-            f"Use `/hosts` to monitor status."
+            f"📦 *Size:* `{size_kb:.1f} KB`{extract_msg}{run_msg}\n\n"
+            f"Use `/hosts` to monitor status.\nType `/logs {target_name}` if it stopped."
         )
         bot.reply_to(message, text, parse_mode="Markdown")
     except Exception as e:
         bot.reply_to(message, f"❌ *Upload Failed:* {e}")
+
+@bot.message_handler(commands=['logs'])
+def get_logs(message):
+    args = message.text.split(" ", 1)
+    if len(args) < 2: 
+        bot.reply_to(message, "⚠️ Usage: `/logs <filename>`")
+        return
+    filename = args[1].strip()
+    log_file = os.path.join(HOSTED_BOTS_DIR, f"{filename}.log")
+    
+    if not os.path.exists(log_file):
+        bot.reply_to(message, f"❌ No logs found for `{filename}`.")
+        return
+        
+    with open(log_file, 'r') as f:
+        logs = f.read()
+        
+    if not logs.strip():
+        bot.reply_to(message, f"📝 *Logs for {filename}:* (Empty/Clean)")
+        return
+        
+    if len(logs) > 4000:
+        logs = logs[-4000:] # Get last 4000 chars
+        
+    bot.reply_to(message, f"📝 *Logs for {filename}:*\n```\n{logs}\n```", parse_mode="Markdown")
 
 @bot.message_handler(commands=['hosts'])
 def list_hosted_bots(message):
@@ -233,11 +282,12 @@ def list_hosted_bots(message):
     
     text = "📁 *[HOSTED BOT FILES]*\n\n"
     for i, f in enumerate(files, 1):
+        if f.endswith(".log") or f.endswith(".zip"): continue
         is_running = any(p['file'] == f for p in bg_processes.values() if p['process'].poll() is None)
         status = "🟢 RUNNING" if is_running else "🔴 STOPPED"
         text += f"{i}. `{f}` - {status}\n"
     
-    text += "\nType `/stopbot <filename>` to kill a running bot."
+    text += "\nType `/logs <filename>` to check for errors."
     bot.reply_to(message, text, parse_mode="Markdown")
 
 @bot.message_handler(commands=['stopbot'])
@@ -249,9 +299,10 @@ def stop_bot(message):
     for pid, pinfo in list(bg_processes.items()):
         if pinfo['file'] == filename:
             try:
-                pinfo['process'].terminate()
+                import signal
+                os.killpg(os.getpgid(pinfo['process'].pid), signal.SIGTERM)
                 del bg_processes[pid]
-                bot.reply_to(message, f"🛑 *[BOT STOPPED]*\nFile `{filename}` (PID `{pid}`) terminated.", parse_mode="Markdown")
+                bot.reply_to(message, f"🛑 *[BOT STOPPED]*\nFile `{filename}` terminated.", parse_mode="Markdown")
                 return
             except Exception as e:
                 bot.reply_to(message, f"❌ Error: {e}")
